@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drawing Preview</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  #stage > img, #stage > canvas { display: block; max-width: 100%; max-height: 100%; object-fit: contain; background: #fff; }
+  #msg { font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #888; text-align: center; padding: 16px; }
+  .spin { width: 22px; height: 22px; border: 2px solid #8884; border-top-color: #888; border-radius: 50%; animation: s .8s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="stage"><div class="spin"></div></div>
+<script>
+(function () {
+  var PDFJS = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+  var WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  var MAX_PX = 4096; // cap canvas size so mobile devices don't run out of memory
+
+  var stage = document.getElementById("stage");
+  var q = new URLSearchParams(location.search);
+  var url = (q.get("url") || "").trim();
+  var id = (q.get("id") || "").trim();
+  var type = (q.get("type") || "").toLowerCase(); // optional: "pdf" or "image"
+  var pageNo = Math.max(1, parseInt(q.get("page"), 10) || 1);
+  if (q.get("bg")) document.body.style.background = q.get("bg");
+
+  function show(el) { stage.innerHTML = ""; stage.appendChild(el); }
+  function fail(text) {
+    var d = document.createElement("div");
+    d.id = "msg";
+    d.textContent = text;
+    show(d);
+  }
+
+  // Google Drive links: pull out the file id so we can use Drive's own page renderer.
+  function driveId(u) {
+    var m = u.match(/drive\.google\.com\/file\/d\/([\w-]+)/) ||
+            u.match(/drive\.google\.com\/.*[?&]id=([\w-]+)/) ||
+            u.match(/docs\.google\.com\/.*\/d\/([\w-]+)/);
+    return m ? m[1] : "";
+  }
+
+  function targetPx() {
+    var dpr = window.devicePixelRatio || 1;
+    return Math.min(MAX_PX, Math.ceil(Math.max(window.innerWidth, window.innerHeight) * dpr * 1.5));
+  }
+
+  function showImage(src, fallbackSrc) {
+    var img = new Image();
+    img.decoding = "async";
+    img.onload = function () { show(img); };
+    img.onerror = function () {
+      if (fallbackSrc) { var f = fallbackSrc; fallbackSrc = null; img.src = f; }
+      else fail("Could not load drawing.");
+    };
+    img.src = src;
+  }
+
+  // Drive renders page 1 of PDFs (and images) server-side; no CORS needed.
+  function showDrive(fileId) {
+    var w = targetPx();
+    showImage(
+      "https://drive.google.com/thumbnail?id=" + encodeURIComponent(fileId) + "&sz=w" + w,
+      "https://lh3.googleusercontent.com/d/" + encodeURIComponent(fileId) + "=w" + w
+    );
+  }
+
+  function loadScript(src) {
+    return new Promise(function (res, rej) {
+      var s = document.createElement("script");
+      s.src = src; s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+
+  function showPdf(src) {
+    loadScript(PDFJS).then(function () {
+      var lib = window.pdfjsLib;
+      lib.GlobalWorkerOptions.workerSrc = WORKER;
+      return lib.getDocument({ url: src, disableAutoFetch: true, isEvalSupported: false }).promise;
+    }).then(function (pdf) {
+      return pdf.getPage(Math.min(pageNo, pdf.numPages));
+    }).then(function (page) {
+      var base = page.getViewport({ scale: 1 });
+      var scale = targetPx() / Math.max(base.width, base.height);
+      var vp = page.getViewport({ scale: scale });
+      var canvas = document.createElement("canvas");
+      canvas.width = Math.floor(vp.width);
+      canvas.height = Math.floor(vp.height);
+      var ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      return page.render({ canvasContext: ctx, viewport: vp }).promise.then(function () {
+        show(canvas);
+        page.cleanup();
+      });
+    }).catch(function (e) {
+      console.error(e);
+      fail("Could not load drawing. The file host may be blocking access (CORS).");
+    });
+  }
+
+  function isImage(u) { return /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(u); }
+  function isPdf(u) { return /\.pdf(\?|#|$)/i.test(u); }
+
+  if (!id && url) id = driveId(url);
+
+  if (id) showDrive(id);
+  else if (!url) fail("No drawing URL.");
+  else if (type === "image" || (type !== "pdf" && isImage(url))) showImage(url);
+  else if (type === "pdf" || isPdf(url)) showPdf(url);
+  else {
+    // Unknown extension: try it as an image first, then as a PDF.
+    var probe = new Image();
+    probe.onload = function () { show(probe); };
+    probe.onerror = function () { showPdf(url); };
+    probe.src = url;
+  }
+})();
+</script>
+</body>
+</html>
