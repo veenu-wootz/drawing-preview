@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Drawing Preview</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
+<link rel="preconnect" href="https://storage.googleapis.com" crossorigin>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; }
   #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
@@ -44,35 +47,42 @@
     img.src = src;
   }
 
+  function ok(r) { if (!r.ok) throw new Error(r.status + " " + r.url); return r; }
+
+  // Library, worker and PDF bytes all download in parallel instead of one after another.
   function showPdf(src) {
-    var s = document.createElement("script");
-    s.src = PDFJS;
-    s.onerror = function () { fail("Could not load PDF renderer."); };
-    s.onload = function () {
+    var libP = new Promise(function (res, rej) {
+      var s = document.createElement("script");
+      s.src = PDFJS; s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+    var workerP = fetch(WORKER).then(ok).then(function (r) { return r.blob(); });
+    var dataP = fetch(src).then(ok).then(function (r) { return r.arrayBuffer(); });
+
+    Promise.all([libP, workerP, dataP]).then(function (v) {
       var lib = window.pdfjsLib;
-      lib.GlobalWorkerOptions.workerSrc = WORKER;
-      lib.getDocument({ url: src, disableAutoFetch: true, isEvalSupported: false }).promise.then(function (pdf) {
-        return pdf.getPage(Math.min(pageNo, pdf.numPages));
-      }).then(function (page) {
-        var base = page.getViewport({ scale: 1 });
-        var px = Math.min(MAX_PX, Math.ceil(Math.max(innerWidth, innerHeight) * (devicePixelRatio || 1) * 1.5));
-        var vp = page.getViewport({ scale: px / Math.max(base.width, base.height) });
-        var canvas = document.createElement("canvas");
-        canvas.width = Math.floor(vp.width);
-        canvas.height = Math.floor(vp.height);
-        var ctx = canvas.getContext("2d");
-        ctx.fillStyle = "#fff";
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        return page.render({ canvasContext: ctx, viewport: vp }).promise.then(function () {
-          show(canvas);
-          page.cleanup();
-        });
-      }).catch(function (e) {
-        console.error(e);
-        fail("Could not load drawing. The file host may be blocking access (CORS).");
+      lib.GlobalWorkerOptions.workerPort = new Worker(URL.createObjectURL(v[1]));
+      return lib.getDocument({ data: new Uint8Array(v[2]), isEvalSupported: false }).promise;
+    }).then(function (pdf) {
+      return pdf.getPage(Math.min(pageNo, pdf.numPages));
+    }).then(function (page) {
+      var base = page.getViewport({ scale: 1 });
+      var px = Math.min(MAX_PX, Math.ceil(Math.max(innerWidth, innerHeight) * (devicePixelRatio || 1) * 1.5));
+      var vp = page.getViewport({ scale: px / Math.max(base.width, base.height) });
+      var canvas = document.createElement("canvas");
+      canvas.width = Math.floor(vp.width);
+      canvas.height = Math.floor(vp.height);
+      var ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      return page.render({ canvasContext: ctx, viewport: vp }).promise.then(function () {
+        show(canvas);
+        page.cleanup();
       });
-    };
-    document.head.appendChild(s);
+    }).catch(function (e) {
+      console.error(e);
+      fail("Could not load drawing. The file host may be blocking access (CORS).");
+    });
   }
 
   var path = url.split(/[?#]/)[0];
