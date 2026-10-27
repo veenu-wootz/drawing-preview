@@ -24,7 +24,6 @@
   var stage = document.getElementById("stage");
   var q = new URLSearchParams(location.search);
   var url = (q.get("url") || "").trim();
-  var id = (q.get("id") || "").trim();
   var type = (q.get("type") || "").toLowerCase(); // optional: "pdf" or "image"
   var pageNo = Math.max(1, parseInt(q.get("page"), 10) || 1);
   if (q.get("bg")) document.body.style.background = q.get("bg");
@@ -37,90 +36,50 @@
     show(d);
   }
 
-  // Google Drive links: pull out the file id so we can use Drive's own page renderer.
-  function driveId(u) {
-    var m = u.match(/drive\.google\.com\/file\/d\/([\w-]+)/) ||
-            u.match(/drive\.google\.com\/.*[?&]id=([\w-]+)/) ||
-            u.match(/docs\.google\.com\/.*\/d\/([\w-]+)/);
-    return m ? m[1] : "";
-  }
-
-  function targetPx() {
-    var dpr = window.devicePixelRatio || 1;
-    return Math.min(MAX_PX, Math.ceil(Math.max(window.innerWidth, window.innerHeight) * dpr * 1.5));
-  }
-
-  function showImage(src, fallbackSrc) {
+  function showImage(src, onError) {
     var img = new Image();
     img.decoding = "async";
     img.onload = function () { show(img); };
-    img.onerror = function () {
-      if (fallbackSrc) { var f = fallbackSrc; fallbackSrc = null; img.src = f; }
-      else fail("Could not load drawing.");
-    };
+    img.onerror = onError || function () { fail("Could not load drawing."); };
     img.src = src;
   }
 
-  // Drive renders page 1 of PDFs (and images) server-side; no CORS needed.
-  function showDrive(fileId) {
-    var w = targetPx();
-    showImage(
-      "https://drive.google.com/thumbnail?id=" + encodeURIComponent(fileId) + "&sz=w" + w,
-      "https://lh3.googleusercontent.com/d/" + encodeURIComponent(fileId) + "=w" + w
-    );
-  }
-
-  function loadScript(src) {
-    return new Promise(function (res, rej) {
-      var s = document.createElement("script");
-      s.src = src; s.onload = res; s.onerror = rej;
-      document.head.appendChild(s);
-    });
-  }
-
   function showPdf(src) {
-    loadScript(PDFJS).then(function () {
+    var s = document.createElement("script");
+    s.src = PDFJS;
+    s.onerror = function () { fail("Could not load PDF renderer."); };
+    s.onload = function () {
       var lib = window.pdfjsLib;
       lib.GlobalWorkerOptions.workerSrc = WORKER;
-      return lib.getDocument({ url: src, disableAutoFetch: true, isEvalSupported: false }).promise;
-    }).then(function (pdf) {
-      return pdf.getPage(Math.min(pageNo, pdf.numPages));
-    }).then(function (page) {
-      var base = page.getViewport({ scale: 1 });
-      var scale = targetPx() / Math.max(base.width, base.height);
-      var vp = page.getViewport({ scale: scale });
-      var canvas = document.createElement("canvas");
-      canvas.width = Math.floor(vp.width);
-      canvas.height = Math.floor(vp.height);
-      var ctx = canvas.getContext("2d");
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      return page.render({ canvasContext: ctx, viewport: vp }).promise.then(function () {
-        show(canvas);
-        page.cleanup();
+      lib.getDocument({ url: src, disableAutoFetch: true, isEvalSupported: false }).promise.then(function (pdf) {
+        return pdf.getPage(Math.min(pageNo, pdf.numPages));
+      }).then(function (page) {
+        var base = page.getViewport({ scale: 1 });
+        var px = Math.min(MAX_PX, Math.ceil(Math.max(innerWidth, innerHeight) * (devicePixelRatio || 1) * 1.5));
+        var vp = page.getViewport({ scale: px / Math.max(base.width, base.height) });
+        var canvas = document.createElement("canvas");
+        canvas.width = Math.floor(vp.width);
+        canvas.height = Math.floor(vp.height);
+        var ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        return page.render({ canvasContext: ctx, viewport: vp }).promise.then(function () {
+          show(canvas);
+          page.cleanup();
+        });
+      }).catch(function (e) {
+        console.error(e);
+        fail("Could not load drawing. The file host may be blocking access (CORS).");
       });
-    }).catch(function (e) {
-      console.error(e);
-      fail("Could not load drawing. The file host may be blocking access (CORS).");
-    });
+    };
+    document.head.appendChild(s);
   }
 
-  function isImage(u) { return /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(u); }
-  function isPdf(u) { return /\.pdf(\?|#|$)/i.test(u); }
-
-  if (!id && url) id = driveId(url);
-
-  if (id) showDrive(id);
-  else if (!url) fail("No drawing URL.");
-  else if (type === "image" || (type !== "pdf" && isImage(url))) showImage(url);
-  else if (type === "pdf" || isPdf(url)) showPdf(url);
-  else {
-    // Unknown extension: try it as an image first, then as a PDF.
-    var probe = new Image();
-    probe.onload = function () { show(probe); };
-    probe.onerror = function () { showPdf(url); };
-    probe.src = url;
-  }
+  var path = url.split(/[?#]/)[0];
+  if (!url) fail("No drawing URL.");
+  else if (type === "pdf" || (type !== "image" && /\.pdf$/i.test(path))) showPdf(url);
+  else if (type === "image" || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(path)) showImage(url);
+  else showImage(url, function () { showPdf(url); }); // unknown extension: try image, then PDF
 })();
 </script>
 </body>
